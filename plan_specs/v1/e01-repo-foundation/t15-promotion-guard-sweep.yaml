@@ -90,7 +90,7 @@ spec:
         checked on each pull request rather than claimed in a report. A workflow with a known actionlint
         finding is shown failing `ci` first.
 status:
-  phase: Pending
+  phase: InProgress
 ---
 apiVersion: planspec.io/v1alpha1
 kind: Plan
