@@ -34,7 +34,16 @@ spec:
     t12's and is reused rather than rewritten.
   priority: 2
   constraints:
-    packages: [.github/workflows, docs/process]
+    packages:
+      - .github/workflows
+      - docs/process
+      # added on the PM's instruction, 2026-10-08: the one re-run implementation may be a script
+      # (scripts/rerun_promotion_guards.py), actionlint runs in ci (scripts/actionlint.sh), and the
+      # runner pin and the sweep's decisions are tested
+      - scripts/rerun_promotion_guards.py
+      - scripts/actionlint.sh
+      - tests/scripts
+      - .github/PULL_REQUEST_TEMPLATE/hotfix.md
     forbidden:
       - Granting write permissions of any kind to a `pull_request`-triggered workflow
       - Checking out or executing pull-request code in any job that holds a write permission
@@ -89,6 +98,13 @@ spec:
         in `ci` over every workflow, pinned to one version, so "clean across every workflow" (ac4) is
         checked on each pull request rather than claimed in a report. A workflow with a known actionlint
         finding is shown failing `ci` first.
+    # added on the PM's instruction, 2026-10-08
+    - id: ac8
+      description: >-
+        Every job in .github/workflows names its runner image, `ubuntu-24.04`, and none runs on
+        `ubuntu-latest`, which GitHub moves to Ubuntu 26 from 2026-10-19: a new image must not change
+        a promotion check without a decision. A test fails on any `-latest` runner label, and the
+        session report says what moving to Ubuntu 26 would later need.
 status:
   phase: InProgress
 ---
