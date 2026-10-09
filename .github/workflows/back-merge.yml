@@ -18,33 +18,64 @@
 # approve pull requests"; without it `gh pr create` is refused and this job fails, which is the
 # signal to back-merge by hand.
 #
-# A second job re-runs promotion-guard.yml on every pull request open against main
-# (v1-e01-t12-promotion-guard-rerun). Merging into main re-runs nothing on pull requests already
-# open against it, GitHub has no "base branch moved" event, and "require branches to be up to date"
-# is off on purpose, so without this a promotion opened before a hotfix keeps a stale green
-# `back-merge` and can merge a combination dev never validated. The re-run is how its `back-merge`
-# learns main moved.
+# A second job re-runs promotion-guard.yml on the pull requests open against main whose guard has
+# not yet seen main's current tip (v1-e01-t12-promotion-guard-rerun, v1-e01-t15-promotion-guard-sweep).
+# Merging into main re-runs nothing on pull requests already open against it, GitHub has no "base
+# branch moved" event, and "require branches to be up to date" is off on purpose, so without this a
+# promotion opened before a hotfix keeps a stale green `back-merge` and can merge a combination dev
+# never validated. The re-run is how its `back-merge` learns main moved. Three triggers start that
+# one job, and all three run the same scripts/rerun_promotion_guards.py:
 #
-# Runs only on push to main, never on a pull request, so no fork's code ever runs with the write
-# permissions below. Each is scoped to the one job that needs it, and the job holding
-# `actions: write` checks out nothing: it reads pull requests and runs through the API and never
-# executes pull-request code.
+#   push               the fast path. main just moved, so this is seconds after a hotfix merges.
+#   schedule           the backstop that needs no event. On 2026-09-30 GitHub never delivered the push
+#                      for a merged hotfix (t12's sandbox proof): no workflow ran, nothing failed, and
+#                      the promotion stayed green and wrong. Everything push-triggered is blind to that,
+#                      so the schedule sweeps whether or not anything happened.
+#   workflow_dispatch  the manual route: one click for an operator who notices a lost push. It takes no
+#                      inputs. It runs from main or dev only (the job refuses any other ref).
+#
+# The sweep is quiet when nothing moved. promotion-guard.yml's `back-merge` job records the main
+# commit it compared, as a notice on its check run, and a pull request whose newest guard run
+# recorded main's current tip is left alone; a sweep that re-runs nothing prints one line. Only a
+# run that recorded another commit, or none, is re-run. The script's docstring has the details.
+#
+# Why every 15 minutes. Charlie merges promotions by hand, usually within an hour of opening them, so
+# the question is how long a lost push may leave a promotion green before the sweep turns it red.
+# Four sweeps an hour bound that at about 15 minutes plus GitHub's start delay. GitHub delays scheduled
+# runs under load and sometimes drops them; a dropped slot costs one more interval (about 30 minutes
+# in all), and even two dropped in a row keep the stale window inside the hour a promotion usually
+# stays open. A shorter interval would mostly add idle runs to the Actions list where a red run has
+# to be noticed, and still could not close the window entirely: a merge in the minutes after a lost
+# push is caught only by the hotfix template's checklist, which asks for the re-run job to have
+# passed on the push. The minutes are off the hour because that is when GitHub's scheduler is busiest.
+# A scheduled run uses this file as it is on the default branch, dev.
+#
+# Runs only on push to main, the schedule and a dispatch, never on a pull request, so no fork's code
+# ever runs with the write permissions below. Each is scoped to the one job that needs it. The job
+# holding `actions: write` checks out only this workflow's own commit of main or dev, never a pull
+# request's code, and reads pull requests and runs through the API.
 
 name: Back-merge main into dev
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
 
 permissions: {}
 
-concurrency:
-  group: back-merge
-  cancel-in-progress: false
-
 jobs:
   open-back-merge-pull-request:
-    runs-on: ubuntu-latest
+    # Only main moving can make dev lack something, so neither the schedule nor a dispatch runs this.
+    if: github.event_name == 'push'
+    # One push at a time, as before the schedule existed. A sweep never waits behind this job and
+    # never takes its place in the queue.
+    concurrency:
+      group: back-merge
+      cancel-in-progress: false
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -110,73 +141,37 @@ jobs:
             --title "Back-merge main → dev" --body-file body.md
 
   rerun-promotion-guards:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # Sweeps queue rather than overlap. A pending sweep replaced by a newer one loses nothing, because
+    # each reads the live state. If a push's sweep and a scheduled one still overlap, the script treats
+    # a run the other just re-ran as handled.
+    concurrency:
+      group: rerun-promotion-guards-${{ github.event_name == 'push' && 'push' || 'sweep' }}
+      cancel-in-progress: false
     permissions:
       actions: write # re-run promotion-guard.yml runs
+      checks: read # read the main commit each guard run recorded on its check run
+      contents: read # check out the script; read main's tip
       pull-requests: read # list the pull requests open against main
-    # No checkout, on purpose: this job holds a write permission, so it must never run code from a
-    # pull request, and it needs none of the repository's own code either.
     steps:
-      - name: Re-run promotion-guard on every pull request open against main
+      # The checkout below is this workflow's own commit. A push and the schedule run from main and
+      # dev; a dispatch could name any branch, including a pull request's, so it is refused there.
+      - name: Run only from main or dev
+        if: github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev'
+        run: |
+          echo "::error::Dispatch this workflow from main or dev; it checks out the ref it runs from."
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/rerun_promotion_guards.py
+          sparse-checkout-cone-mode: false
+      # Standard library only, so the runner's own python3 runs it. A failed or refused re-run, or a
+      # run that never finished, fails this job: that is the signal to re-run that pull request's
+      # checks by hand (docs/process/branching-and-environments.md).
+      - name: Re-run promotion-guard where it has not seen main's tip
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        # A re-run replays the original pull_request event, including its description, which is
-        # the newest one because this re-runs the newest run for the head commit. The `back-merge`
-        # job fetches main's and dev's live tips itself, so its re-run sees the push that started
-        # this workflow.
-        #
-        # A run still in progress may have fetched main before this push, so wait for it to finish
-        # and then re-run it; GitHub refuses to re-run a run in progress. A pull request with no
-        # run at all is already blocked, because its required checks never reported. A failed
-        # re-run fails this job, which is the signal to re-run that pull request's checks by hand.
-        run: |
-          set -euo pipefail
-          # base=main in the query, and checked again here: nothing based on another branch is touched.
-          gh api --paginate "repos/$REPO/pulls?state=open&base=main&per_page=100" \
-            | jq -r '.[] | select(.base.ref == "main")
-                     | [.number, .head.sha, .head.ref, (.head.repo.full_name // "")] | @tsv' \
-            > open_prs.tsv
-          if [ ! -s open_prs.tsv ]; then
-            echo "No pull requests are open against main."
-            exit 0
-          fi
-
-          # The newest promotion-guard run for this pull request's head commit, as "id status".
-          # Only one open pull request into main can have a given head branch and repository.
-          newest_run() {
-            gh api "repos/$REPO/actions/workflows/promotion-guard.yml/runs?event=pull_request&head_sha=$1&per_page=100" \
-              | jq -r --arg ref "$2" --arg repo "$3" '
-                  [.workflow_runs[]
-                   | select(.head_branch == $ref and .head_repository.full_name == $repo)]
-                  | sort_by(.created_at) | last // empty | "\(.id) \(.status)"'
-          }
-
-          failed=0
-          while IFS=$'\t' read -r number sha ref head_repo; do
-            if [ -z "$head_repo" ]; then
-              echo "::warning::#$number: its head repository is gone; promotion-source fails it anyway."
-              continue
-            fi
-            run=$(newest_run "$sha" "$ref" "$head_repo")
-            waited=0
-            while [ -n "$run" ] && [ "${run#* }" != completed ] && [ "$waited" -lt 300 ]; do
-              echo "#$number: promotion-guard run ${run% *} is ${run#* }; waiting for it to finish."
-              sleep 15
-              waited=$((waited + 15))
-              run=$(newest_run "$sha" "$ref" "$head_repo")
-            done
-            if [ -z "$run" ]; then
-              echo "::warning::#$number: no promotion-guard run for head $sha, so there is nothing to re-run."
-            elif [ "${run#* }" != completed ]; then
-              echo "::error::#$number: promotion-guard run ${run% *} did not finish within 5 minutes. Re-run its checks by hand."
-              failed=1
-            elif gh api -X POST "repos/$REPO/actions/runs/${run% *}/rerun" > /dev/null; then
-              echo "#$number: re-running promotion-guard run ${run% *} for head $sha."
-            else
-              echo "::error::#$number: could not re-run promotion-guard run ${run% *}. Re-run its checks by hand."
-              failed=1
-            fi
-          done < open_prs.tsv
-          exit "$failed"
+        run: python3 scripts/rerun_promotion_guards.py --repo "$REPO"

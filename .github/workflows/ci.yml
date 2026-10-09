@@ -16,6 +16,11 @@
 # nothing reads a repository secret. The only network use is installing tools and dependencies.
 # LLM evaluations, browser end-to-end suites, live canaries, terraform plan/apply and load tests never
 # run here.
+#
+# Every job in every workflow names its runner image, ubuntu-24.04, never ubuntu-latest: GitHub moves
+# ubuntu-latest to Ubuntu 26 from 2026-10-19, and a new image (its python3, shellcheck, gh) must not
+# change a promotion check without someone deciding it should. tests/scripts/test_workflow_runners.py
+# fails on any `-latest` label.
 
 name: CI
 
@@ -42,7 +47,7 @@ jobs:
   # Which areas of the repository a pull request touches. Pushes to dev and main run every job: they
   # are the record that the merged result is green, and the 5-minute budget is for pull requests.
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -54,6 +59,7 @@ jobs:
       site: ${{ github.event_name != 'pull_request' || steps.filter.outputs.site == 'true' }}
       web: ${{ github.event_name != 'pull_request' || steps.filter.outputs.web == 'true' }}
       api: ${{ github.event_name != 'pull_request' || steps.filter.outputs.api == 'true' }}
+      workflows: ${{ github.event_name != 'pull_request' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: dorny/paths-filter@v4
         id: filter
@@ -84,6 +90,9 @@ jobs:
               - '**/*.md'
               - 'infrastructure/envs/**'
               - '.gitignore'
+              # tests/scripts read the workflows themselves: their permissions, triggers and
+              # pinned runners (test_workflow_runners.py, test_back_merge_workflow.py).
+              - '.github/workflows/**'
             infrastructure:
               - *workflow
               - 'infrastructure/**'
@@ -101,6 +110,9 @@ jobs:
               - 'packages/debate_api/**'
               - 'openapi/**'
               - 'clients/**'
+            workflows:
+              - '.github/workflows/**'
+              - 'scripts/actionlint.sh'
 
   # Runs on every trigger, whatever changed. It checks the whole tree rather than the changed files:
   # `ruff format --check` failed on dev from #53 until #70 because pre-commit only formats staged
@@ -108,7 +120,7 @@ jobs:
   # in a module docstring, where Python parsed the file and the whole suite passed over them. The
   # pre-commit hooks only protect a clone where someone ran `uv run pre-commit install`; this does not.
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - &checkout
@@ -141,7 +153,7 @@ jobs:
   typecheck:
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - *checkout
@@ -154,7 +166,7 @@ jobs:
   test:
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - *checkout
@@ -171,7 +183,7 @@ jobs:
   import-boundaries:
     needs: changes
     if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - *checkout
@@ -186,7 +198,7 @@ jobs:
 
   # Runs on every trigger. The validator reads the whole plan_specs/ tree in about a second.
   spec-validate:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -236,7 +248,7 @@ jobs:
   terraform-checks:
     needs: changes
     if: needs.changes.outputs.infrastructure == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - *checkout
@@ -265,7 +277,7 @@ jobs:
   site:
     needs: changes
     if: needs.changes.outputs.site == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - *checkout
@@ -282,6 +294,21 @@ jobs:
       - name: site/scripts/pre-commit-checks.sh
         run: site/scripts/pre-commit-checks.sh
 
+  # actionlint over every workflow, pinned to one version and checksum-verified, with ShellCheck over
+  # the run: blocks (v1-e01-t15-promotion-guard-sweep ac7). The promotion guards' permission shape is
+  # only as good as the workflows that carry it, so "actionlint is clean" is checked here on each pull
+  # request that touches a workflow, not claimed in a session report. scripts/actionlint.sh holds the
+  # version and the checksums; it runs the same way in a checkout.
+  workflow-lint:
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - *checkout
+      - name: actionlint over every workflow
+        run: scripts/actionlint.sh
+
   # The single required status check on the protect-dev and protect-main rulesets. It passes only if
   # every job it needs succeeded, or was skipped because its path filter found nothing to check. A job
   # skipped for any other reason (the `changes` job failed, a condition was wrong) fails it.
@@ -295,8 +322,9 @@ jobs:
       - spec-validate
       - terraform-checks
       - site
+      - workflow-lint
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Every check passed or was skipped by its path filter
@@ -306,7 +334,7 @@ jobs:
           # has no filter, so it has to succeed.
           PATH_FILTER_OF_JOB: >-
             {"typecheck": "python", "test": "python", "import-boundaries": "python",
-             "terraform-checks": "infrastructure", "site": "site"}
+             "terraform-checks": "infrastructure", "site": "site", "workflow-lint": "workflows"}
         run: |
           jq -r --argjson filter_of "$PATH_FILTER_OF_JOB" '
             (.changes.outputs // {}) as $changed

@@ -56,7 +56,7 @@ env:
 jobs:
   regenerate:
     if: github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write # push bot/refresh-generated-files, delete it when dev is fresh
@@ -154,7 +154,7 @@ jobs:
   dispatch-ci:
     needs: regenerate
     if: needs.regenerate.outputs.head != ''
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       actions: write # dispatch ci.yml on the refresh branch

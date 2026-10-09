@@ -14,10 +14,13 @@
 #   back-merge        main holds no non-merge commit that dev lacks, i.e. every hotfix was
 #                     back-merged. Passes for hotfix/* heads so a second fix is never blocked.
 #
-# back-merge.yml re-runs this workflow on every pull request open against main whenever main moves
-# (v1-e01-t12-promotion-guard-rerun), because nothing else would: that is how a promotion opened
+# back-merge.yml re-runs this workflow on the pull requests open against main whenever main moves
+# (v1-e01-t12-promotion-guard-rerun), and sweeps them on a schedule in case the push never arrives
+# (v1-e01-t15-promotion-guard-sweep), because nothing else would: that is how a promotion opened
 # before a hotfix turns red. A re-run replays the original event, so a check that must see main as
-# it is now has to fetch it, as the back-merge job does, never read it from the event.
+# it is now has to fetch it, as the back-merge job does, never read it from the event. The back-merge
+# job also records the main commit it fetched, as a notice on its check run, so the sweep can leave a
+# pull request alone when its guard already saw main's tip.
 #
 # SECURITY: this repository is public, so anyone can open a pull request from a fork, and on a
 # `pull_request` event the code that runs is the pull request's own. Nothing here may hold a write
@@ -45,7 +48,7 @@ jobs:
   promotion-source:
     # The job name is the required status check's name on protect-main. Do not rename it.
     name: promotion-source
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -74,7 +77,7 @@ jobs:
   back-merge:
     # The job name is the required status check's name on protect-main. Do not rename it.
     name: back-merge
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -96,6 +99,11 @@ jobs:
           git fetch --no-tags origin
           +refs/heads/main:refs/remotes/origin/main
           +refs/heads/dev:refs/remotes/origin/dev
+      # A record, not a check: the main commit the step below compares against, as a notice on this
+      # job's check run. back-merge.yml's sweep (scripts/rerun_promotion_guards.py) reads it to decide
+      # whether this run already reflects main's tip, so the title and the bare SHA are its contract.
+      - name: Record the main commit this run compares
+        run: echo "::notice title=promotion-guard evaluated main::$(git rev-parse refs/remotes/origin/main)"
       - name: main holds nothing that dev lacks
         env:
           HEAD_REF: ${{ github.head_ref }}
