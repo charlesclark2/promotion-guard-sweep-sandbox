@@ -409,9 +409,33 @@ line: `No pull requests are open against main.`, or a `Swept … nothing was re-
 <!-- Completed by the PM only. scripts/task pr refuses to open a PR unless the last Verdict in
 this report is ACCEPTED. A later review is appended after this one; this one is never edited. -->
 
-**Verdict:** PENDING
+**Verdict:** ACCEPTED
 <!-- ACCEPTED / CHANGES_REQUESTED -->
 
-**Reviewed by / date:**
+**Reviewed by / date:** PM, 2026-10-08
 
 **Notes:**
+
+Accepted, as built. The sandbox procedure is approved, with two changes the operator makes when running it (below).
+
+- **Checked against the branch** (`06143fe`, tree clean, 2 commits behind `origin/dev`: t12 and a generated-files refresh, so run `scripts/task sync` before the PR).
+  - The re-run is one script, and t12's inline shell is removed, not copied.
+  - The permissions keep their shape: `permissions: {}` at the top; `actions: write` only on the re-run job, beside `checks`/`contents`/`pull-requests: read`; the open job runs on push only.
+  - The write job checks out one file, sparse, from its own commit, behind a `main`/`dev` ref gate.
+  - "Already reflects" is an exact match of the `main` SHA the guard recorded, with no timestamps.
+  - All 12 mutants were caught, including the three the PM named.
+  - Every runner is pinned to `ubuntu-24.04`, and a test refuses `-latest`.
+- **Deviations 1–5 are accepted.**
+  - Deviation 2 corrects the PM. A run that never existed cannot be replayed, and the permission shape rules out retriggering, so a warning plus protect-main's existing block is the right handling.
+  - Deviation 3's loop is confined to a hotfix PR open between this merging and its promotion. The re-run cannot change a hotfix's result. The operator keeps that window short by promoting soon after this merges.
+  - Deviation 5 (disabling `back-merge.yml` to lose the push) tests the file byte for byte, which beats removing the trigger.
+- **The proof.** Run follow-up 1 **before** opening the pull request, if the operator has the 45 minutes: the procedure uses this branch and needs nothing merged.
+  - If it passes, the session appends a "Sandbox proof (ac5)" section with [A]–[N], sets the Goal to `Succeeded`, and ends the report with a new, empty PM review. The PM then accepts it for a normal `scripts/task pr`. That avoids a follow-up spec PR.
+  - If the operator would rather merge first, `scripts/task pr --partial` is authorised on this review, and the proof follows.
+- **Two changes when running the procedure** (the PM gives the operator the exact lines):
+  - The wait for the scheduled slot is bounded at 60 minutes rather than looping forever.
+  - After the sandbox is deleted, the `delete_repo` scope is removed from the `gh` token again (`gh auth refresh -h github.com -r delete_repo`).
+- **Follow-up work.**
+  - The dispatch also opening the back-merge pull request is filed by the PM as an E01 task (priority 3).
+  - The Ubuntu 26 move is noted, but not filed until a reason to move exists.
+  - The 60-day idle limit is moot while `dev` sees weekly activity.
