@@ -219,7 +219,9 @@ class Sweep:
         run = self.newest_run(pull)
         waited = 0
         while run is not None and not run.finished and waited < self.wait_limit_seconds:
-            self.out(f"#{pull.number}: promotion-guard run {run.id} is {run.status}; waiting for it to finish.")
+            self.out(
+                f"#{pull.number}: promotion-guard run {run.id} is {run.status}; waiting for it to finish."
+            )
             self.sleep(self.poll_seconds)
             waited += self.poll_seconds
             run = self.newest_run(pull)
@@ -266,7 +268,9 @@ def summary(outcomes: dict[int, Outcome], main_tip: str) -> str:
     noun = "pull request" if count == 1 else "pull requests"
     head = f"Swept {count} {noun} open against {GUARDED_BASE} at {short(main_tip)}"
     if all(outcome is Outcome.CURRENT for outcome in outcomes.values()):
-        return f"{head}: every newest promotion-guard run already evaluated that commit, so nothing was re-run."
+        return (
+            f"{head}: every newest promotion-guard run already evaluated that commit, so nothing was re-run."
+        )
     parts = []
     for outcome in Outcome:
         numbers = [f"#{number}" for number, got in outcomes.items() if got is outcome]
